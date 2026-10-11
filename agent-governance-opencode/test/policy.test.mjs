@@ -1269,3 +1269,87 @@ test("an invalid secretPatterns block fails closed", async (t) => {
     assert.equal(result.effect, "deny", `${label} should fail closed`);
   }
 });
+
+test("each built-in secret pattern redacts a representative credential", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "agt-secret-defaults-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const state = await loadPolicy({
+    auditPath: join(root, "audit.json"),
+    homeDirectory: root,
+    policyPath: null,
+  });
+
+  const samples = [
+    ["aws-access-key", `AKIA${"A".repeat(16)}`],
+    ["github-token", `ghp_${"a".repeat(40)}`],
+    ["github-fine-grained", `github_pat_${"a".repeat(30)}`],
+    ["openai-key", `sk-${"a".repeat(40)}`],
+    ["azure-account-key", `AccountKey=${"a".repeat(44)}`],
+    ["jwt-token", `eyJ${"a".repeat(12)}.eyJ${"b".repeat(12)}.${"c".repeat(20)}`],
+    [
+      "private-key-block",
+      `-----BEGIN RSA PRIVATE KEY-----\n${"a".repeat(64)}\n-----END RSA PRIVATE KEY-----`,
+    ],
+    // Built from parts so the literal source text does not itself look like a
+    // Slack bot token to repository secret scanners.
+    [
+      "slack-token",
+      `xoxb-${"1".repeat(12)}-${"2".repeat(12)}-${"a".repeat(24)}`,
+    ],
+    ["slack-webhook", `https://hooks.slack.com/services/T00000000/B00000000/${"a".repeat(24)}`],
+    ["github-app-token", `ghs_${"a".repeat(36)}`],
+    ["npm-token", `npm_${"a".repeat(36)}`],
+    ["google-api-key", `AIza${"a".repeat(35)}`],
+    ["atlassian-token", `ATATT3x${"a".repeat(80)}`],
+    ["db-connection-string", "postgres://admin:hunter2@db.internal:5432/app"],
+  ];
+
+  for (const [id, credential] of samples) {
+    const result = await evaluateOpenCodeToolOutput(state, {
+      tool: "bash",
+      output: `value: ${credential}`,
+      sessionId: `default-${id}`,
+    });
+    assert.equal(result.redact, true, `${id} should redact`);
+    assert.match(result.redactedOutput, new RegExp(`\\[AGT_REDACTED:${id}\\]`), id);
+    assert.ok(!result.redactedOutput.includes(credential), `${id} must not leak the value`);
+  }
+});
+
+test("ordinary tool output is not redacted by the built-in patterns", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "agt-secret-false-positive-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const state = await loadPolicy({
+    auditPath: join(root, "audit.json"),
+    homeDirectory: root,
+    policyPath: null,
+  });
+
+  const corpus = [
+    ["typescript source", "export function getUserData(id: string) {\n  return db.find({ id });\n}"],
+    ["go source", "func main() {\n\tfmt.Println(\"sk-is-not-a-key\")\n}"],
+    [
+      "unified diff",
+      "--- a/app.ts\n+++ b/app.ts\n@@ -1,3 +1,4 @@\n-const a = 1;\n+const b = 2;\n",
+    ],
+    ["markdown fence", "```bash\nnpm install --save-dev eslint\n```"],
+    ["slack domain without a webhook path", "See https://hooks.slack.com/ for setup."],
+    ["credential free connection uri", "postgres://localhost:5432/app_development"],
+    ["connection uri with a host only", "mongodb://cluster.internal:27017/app"],
+    ["short google prefix", "The constant AIzaShort is not a key."],
+    ["prose mentioning token prefixes", "Rotate any ghp_ or xoxb- token you find."],
+    ["international text", "Grüße aus München, 東京, and Ακρόπολη."],
+    ["jwt-like but too short", "eyJabc.eyJdef.sig"],
+  ];
+
+  for (const [label, output] of corpus) {
+    const result = await evaluateOpenCodeToolOutput(state, {
+      tool: "read",
+      output,
+      sessionId: "false-positive",
+    });
+    assert.equal(result.redact, false, `${label} should not be redacted: ${result.reason}`);
+  }
+});

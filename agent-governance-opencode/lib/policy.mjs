@@ -2071,6 +2071,25 @@ const SECRET_PATTERNS = [
   { id: "azure-account-key", regex: /\bAccountKey=[A-Za-z0-9+/=]{40,}\b/g },
   { id: "private-key-block", ranges: privateKeyBlockRanges },
   { id: "jwt-token", regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+  // Each pattern below is anchored on a vendor prefix with a length floor, so
+  // ordinary source, diffs and prose do not match.
+  { id: "slack-token", regex: /\bxox[abeprs]-[A-Za-z0-9-]{10,}\b/g },
+  {
+    id: "slack-webhook",
+    regex: /https:\/\/hooks\.slack\.com\/services\/T[A-Za-z0-9_]+\/B[A-Za-z0-9_]+\/[A-Za-z0-9_]{16,}/g,
+  },
+  // ghp_ is already covered by github-token above, so it is excluded here.
+  { id: "github-app-token", regex: /\bgh[orsu]_[A-Za-z0-9]{30,}\b/g },
+  { id: "npm-token", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { id: "google-api-key", regex: /\bAIza[A-Za-z0-9_-]{35}\b/g },
+  { id: "atlassian-token", regex: /\bATATT3x[A-Za-z0-9_\-=]{64,}\b/g },
+  {
+    // Requires a non-empty password and a known scheme. A credential-free URI
+    // such as postgres://localhost:5432/db is left alone.
+    id: "db-connection-string",
+    regex:
+      /\b(?:postgres|postgresql|mysql|mongodb\+srv|mongodb|redis|rediss|amqp|amqps|mssql):\/\/[^\s:@/]+:[^\s:@/]+@[^\s/]+/g,
+  },
 ];
 
 const BUILTIN_SECRET_PATTERN_IDS = new Set(SECRET_PATTERNS.map((pattern) => pattern.id));

@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1107,4 +1108,164 @@ test("with denyOnPolicyError off, a bad audit config still writes entries", asyn
   // The decision is still recorded, with an unkeyed digest and no principal.
   assert.equal(entry.argsDigestAlg, "sha256");
   assert.equal(Object.hasOwn(entry, "principal"), false);
+});
+
+// Mirrors MAX_SECRET_PATTERNS in lib/policy.mjs.
+const SECRET_PATTERN_LIMIT = 64;
+
+async function writeSecretPatternPolicy(root, secretPatterns, overrides = {}) {
+  const policyPath = join(root, `secret-patterns-${randomUUID()}.json`);
+  await writeFile(
+    policyPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      version: 1,
+      mode: "enforce",
+      toolPolicies: { allowedTools: ["*"] },
+      secretPatterns,
+      ...overrides,
+    }),
+    "utf8",
+  );
+  return policyPath;
+}
+
+test("a configured secret pattern redacts without replacing the built-ins", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "agt-secret-patterns-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const state = await loadPolicy({
+    auditPath: join(root, "audit.json"),
+    policyPath: await writeSecretPatternPolicy(root, [
+      { id: "acme-token", source: "\\bacme_[0-9a-f]{32}\\b" },
+    ]),
+  });
+  assert.equal(state.configuredPolicyError, undefined);
+
+  const configured = `acme_${"a".repeat(32)}`;
+  const builtin = `ghp_${"b".repeat(40)}`;
+  const result = await evaluateOpenCodeToolOutput(state, {
+    tool: "bash",
+    output: `custom ${configured} and builtin ${builtin}`,
+    sessionId: "configured-patterns",
+  });
+
+  assert.equal(result.redact, true);
+  assert.match(result.redactedOutput, /\[AGT_REDACTED:acme-token\]/);
+  // The built-in still fires, so configured patterns merge rather than replace.
+  assert.match(result.redactedOutput, /\[AGT_REDACTED:github-token\]/);
+  assert.ok(!result.redactedOutput.includes(configured));
+  assert.ok(!result.redactedOutput.includes(builtin));
+});
+
+test("a configured pattern still matches on a later call", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "agt-secret-patterns-reuse-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const state = await loadPolicy({
+    auditPath: join(root, "audit.json"),
+    policyPath: await writeSecretPatternPolicy(root, [
+      { id: "acme-token", source: "\\bacme_[0-9a-f]{32}\\b" },
+    ]),
+  });
+
+  // Compiled patterns are reused across calls. A global regex left with a stale
+  // lastIndex would make the second scan miss the credential.
+  for (const fill of ["a", "b", "c"]) {
+    const result = await evaluateOpenCodeToolOutput(state, {
+      tool: "bash",
+      output: `token acme_${fill.repeat(32)}`,
+      sessionId: "reuse",
+    });
+    assert.equal(result.redact, true, `call with ${fill} should redact`);
+  }
+});
+
+test("a configured pattern reports its id to audit and never the matched value", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "agt-secret-patterns-audit-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const auditPath = join(root, "audit.json");
+  const state = await loadPolicy({
+    auditPath,
+    policyPath: await writeSecretPatternPolicy(root, [
+      { id: "acme-token", source: "\\bacme_[0-9a-f]{32}\\b" },
+    ]),
+  });
+
+  const secret = `acme_${"d".repeat(32)}`;
+  await evaluateOpenCodeToolOutput(state, {
+    tool: "bash",
+    output: `token ${secret}`,
+    sessionId: "audit-ids",
+  });
+
+  const [entry] = await loadAuditEntries(auditPath);
+  assert.equal(entry.decision, "review");
+  assert.match(entry.reason, /acme-token/);
+  const raw = await readFile(auditPath, "utf8");
+  assert.ok(!raw.includes(secret), "the audit log must not hold the matched value");
+});
+
+test("getPolicyStatus reports built-in and configured pattern ids only", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "agt-secret-patterns-status-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const source = "\\bacme_[0-9a-f]{32}\\b";
+  const state = await loadPolicy({
+    auditPath: join(root, "audit.json"),
+    policyPath: await writeSecretPatternPolicy(root, [{ id: "acme-token", source }]),
+  });
+
+  const status = await getPolicyStatus(state);
+  assert.ok(status.secretPatternIds.includes("acme-token"));
+  assert.ok(status.secretPatternIds.includes("github-token"));
+  assert.deepEqual(status.secretPatternIds, [...status.secretPatternIds].sort());
+  // Ids are reportable. Pattern sources are not.
+  assert.ok(!JSON.stringify(status).includes(source));
+});
+
+test("an invalid secretPatterns block fails closed", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "agt-secret-patterns-invalid-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const cases = [
+    ["duplicate id", [{ id: "dup", source: "a" }, { id: "dup", source: "b" }], /duplicate id/],
+    ["built-in id", [{ id: "github-token", source: "a" }], /reserved by a built-in/],
+    ["missing id", [{ source: "a" }], /id must match/],
+    ["unusable id", [{ id: "has spaces", source: "a" }], /id must match/],
+    ["missing source", [{ id: "x", source: "   " }], /missing regex source/],
+    ["unparseable regex", [{ id: "x", source: "a(" }], /secretPatterns\[0\]/],
+    ["unknown flag", [{ id: "x", source: "a", flags: "Q" }], /secretPatterns\[0\]/],
+    ["sticky flag", [{ id: "x", source: "a", flags: "y" }], /sticky/],
+    ["matches empty string", [{ id: "x", source: "a*" }], /matches the empty string/],
+    ["not an array", { id: "x", source: "a" }, /expected an array/],
+    [
+      "too many patterns",
+      Array.from({ length: SECRET_PATTERN_LIMIT + 1 }, (_, i) => ({
+        id: `p${i}`,
+        source: "a",
+      })),
+      /exceeds the limit/,
+    ],
+  ];
+
+  for (const [label, secretPatterns, expected] of cases) {
+    const state = await loadPolicy({
+      auditPath: join(root, `audit-${randomUUID()}.json`),
+      policyPath: await writeSecretPatternPolicy(root, secretPatterns),
+    });
+
+    assert.ok(state.configuredPolicyError, `${label} should be rejected`);
+    assert.match(state.configuredPolicyError.message, expected, label);
+
+    // Enforce mode denies rather than running with redaction disabled.
+    const result = await evaluateOpenCodeTool(state, {
+      tool: "read",
+      args: { filePath: join(root, "note.txt") },
+      cwd: root,
+      sessionId: "invalid-patterns",
+    });
+    assert.equal(result.effect, "deny", `${label} should fail closed`);
+  }
 });

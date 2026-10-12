@@ -42,7 +42,7 @@ const MIN_AUDIT_HMAC_KEY_BYTES = 32;
 /** Bounds on the principal subject and issuer recorded in an audit entry. */
 const MAX_PRINCIPAL_FIELD_LENGTH = 256;
 /** Bounds on operator-supplied secret patterns. These run on every tool output. */
-const MAX_SECRET_PATTERNS = 64;
+export const MAX_SECRET_PATTERNS = 64;
 const MAX_SECRET_PATTERN_SOURCE_LENGTH = 1000;
 /** Pattern ids appear in audit entries and in redaction placeholders. */
 const SECRET_PATTERN_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -1047,12 +1047,31 @@ function compileSecretPatterns(raw) {
         `Invalid ${label}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    if (regex.test("")) {
-      // Such a pattern matches at every position, so it would redact the whole
-      // tool output rather than a credential inside it.
-      throw new Error(`Invalid ${label}: pattern matches the empty string.`);
+    // A pattern that matches the empty string or any single arbitrary
+    // character matches almost everywhere, so it would redact the whole tool
+    // output rather than a credential inside it. Probing the empty string
+    // alone lets `.+` and `[\s\S]` through, so probe a character and a
+    // newline too.
+    for (const probe of ["", "a", "\n"]) {
+      regex.lastIndex = 0;
+      if (regex.test(probe)) {
+        throw new Error(
+          `Invalid ${label}: pattern matches ${
+            probe === "" ? "the empty string" : "a single arbitrary character"
+          }.`,
+        );
+      }
     }
     regex.lastIndex = 0;
+
+    // Deliberately no complexity guard. The probes above happen to reject the
+    // simplest catastrophic sources, but not the class: `(x+x+)+y` passes them
+    // and still takes seconds on 28 characters of hostile tool output, and
+    // these patterns run on every tool result. That risk is accepted rather
+    // than overlooked. The policy file already takes arbitrary operator regexes
+    // in pathPatterns, urlPatterns, commandPatterns and poisoningPatterns, so
+    // this key adds no new trust boundary, and the count and source-length caps
+    // above bound the blast radius. Revisit together with those keys, not alone.
 
     return { id, regex };
   });
@@ -2079,7 +2098,7 @@ const SECRET_PATTERNS = [
     regex: /https:\/\/hooks\.slack\.com\/services\/T[A-Za-z0-9_]+\/B[A-Za-z0-9_]+\/[A-Za-z0-9_]{16,}/g,
   },
   // ghp_ is already covered by github-token above, so it is excluded here.
-  { id: "github-app-token", regex: /\bgh[orsu]_[A-Za-z0-9]{30,}\b/g },
+  { id: "github-app-token", regex: /\bgh[orsu]_[A-Za-z0-9]{36,}\b/g },
   { id: "npm-token", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
   { id: "google-api-key", regex: /\bAIza[A-Za-z0-9_-]{35}\b/g },
   { id: "atlassian-token", regex: /\bATATT3x[A-Za-z0-9_\-=]{64,}\b/g },

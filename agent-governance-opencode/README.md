@@ -297,7 +297,7 @@ Fourteen patterns ship by default:
 | `aws-access-key` | `AKIA` plus 16 upper-case alphanumerics |
 | `github-token` | `ghp_` plus 30 or more characters |
 | `github-fine-grained` | `github_pat_` plus 20 or more characters |
-| `github-app-token` | `gho_`, `ghr_`, `ghs_` or `ghu_` plus 30 or more characters |
+| `github-app-token` | `gho_`, `ghr_`, `ghs_` or `ghu_` plus 36 or more characters |
 | `openai-key` | `sk-` plus 32 or more characters |
 | `slack-token` | `xoxa-`, `xoxb-`, `xoxe-`, `xoxp-`, `xoxr-` or `xoxs-` |
 | `slack-webhook` | a `hooks.slack.com/services/T.../B.../...` URL |
@@ -334,9 +334,10 @@ audit reason, so keep it stable.
 A `secretPatterns` block is refused outright if any pattern has a blank or
 unusable `id`, an `id` that collides with a built-in or with an earlier
 configured pattern, a blank or oversized `source`, an unparseable regex, an
-unknown flag, the sticky `y` flag, or a source that matches the empty string.
-That last case would redact the whole tool output rather than a credential
-inside it. A refused block is a policy load failure, so under the default
+unknown flag, the sticky `y` flag, or a source that matches the empty string or
+any single arbitrary character. Those last cases, which include `.+` and
+`[\s\S]`, would redact the whole tool output rather than a credential inside
+it. A refused block is a policy load failure, so under the default
 `denyOnPolicyError` the plugin denies requests until it is fixed rather than
 running with redaction quietly disabled. Note that a policy file which fails to
 compile is discarded whole, so a `denyOnPolicyError: false` inside that same
@@ -347,8 +348,10 @@ sources are never reported, and neither is any matched value.
 
 **Limits.** Configured patterns run against every tool output, and AGT does not
 analyse their complexity, so a catastrophically backtracking regex is the
-operator's to avoid. At most 64 patterns are accepted, each with a source of at
-most 1000 characters. This matches the existing `pathPatterns`, `urlPatterns`,
+operator's to avoid. The checks above reject the simplest runaway sources but
+not the class: `(x+x+)+y` passes them and still takes seconds on 28 characters.
+At most 64 patterns are accepted, each with a source of at most 1000
+characters. This matches the existing `pathPatterns`, `urlPatterns`,
 `commandPatterns` and `poisoningPatterns` keys, which already accept arbitrary
 operator regexes. Redaction also stays deliberately conservative: it catches
 known credential shapes, not every secret, so a high-entropy value with no

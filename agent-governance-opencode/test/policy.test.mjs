@@ -19,6 +19,7 @@ import {
   evaluateOpenCodeToolOutput,
   getPolicyStatus,
   loadPolicy,
+  MAX_SECRET_PATTERNS,
   PRINCIPAL_ISS_ENV,
   PRINCIPAL_SUB_ENV,
   SURFACE_NAME,
@@ -1110,9 +1111,6 @@ test("with denyOnPolicyError off, a bad audit config still writes entries", asyn
   assert.equal(Object.hasOwn(entry, "principal"), false);
 });
 
-// Mirrors MAX_SECRET_PATTERNS in lib/policy.mjs.
-const SECRET_PATTERN_LIMIT = 64;
-
 async function writeSecretPatternPolicy(root, secretPatterns, overrides = {}) {
   const policyPath = join(root, `secret-patterns-${randomUUID()}.json`);
   await writeFile(
@@ -1229,22 +1227,30 @@ test("an invalid secretPatterns block fails closed", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "agt-secret-patterns-invalid-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
+  // Valid on its own, so each case below fails for the reason it names rather
+  // than tripping an earlier check.
+  const okSource = "tok_[0-9]{8}";
   const cases = [
-    ["duplicate id", [{ id: "dup", source: "a" }, { id: "dup", source: "b" }], /duplicate id/],
-    ["built-in id", [{ id: "github-token", source: "a" }], /reserved by a built-in/],
-    ["missing id", [{ source: "a" }], /id must match/],
-    ["unusable id", [{ id: "has spaces", source: "a" }], /id must match/],
+    ["duplicate id", [{ id: "dup", source: okSource }, { id: "dup", source: okSource }], /duplicate id/],
+    ["built-in id", [{ id: "github-token", source: okSource }], /reserved by a built-in/],
+    ["missing id", [{ source: okSource }], /id must match/],
+    ["unusable id", [{ id: "has spaces", source: okSource }], /id must match/],
     ["missing source", [{ id: "x", source: "   " }], /missing regex source/],
-    ["unparseable regex", [{ id: "x", source: "a(" }], /secretPatterns\[0\]/],
-    ["unknown flag", [{ id: "x", source: "a", flags: "Q" }], /secretPatterns\[0\]/],
-    ["sticky flag", [{ id: "x", source: "a", flags: "y" }], /sticky/],
+    ["unparseable regex", [{ id: "x", source: "tok_(" }], /secretPatterns\[0\]/],
+    ["unknown flag", [{ id: "x", source: okSource, flags: "Q" }], /secretPatterns\[0\]/],
+    ["sticky flag", [{ id: "x", source: okSource, flags: "y" }], /sticky/],
     ["matches empty string", [{ id: "x", source: "a*" }], /matches the empty string/],
-    ["not an array", { id: "x", source: "a" }, /expected an array/],
+    // An empty-string probe alone would let each of these through.
+    ["matches any character", [{ id: "x", source: ".+" }], /single arbitrary character/],
+    ["matches any character or newline", [{ id: "x", source: "[\\s\\S]" }], /single arbitrary character/],
+    ["matches whitespace", [{ id: "x", source: "\\s" }], /single arbitrary character/],
+    ["matches one character class", [{ id: "x", source: "[A-Za-z]" }], /single arbitrary character/],
+    ["not an array", { id: "x", source: okSource }, /expected an array/],
     [
       "too many patterns",
-      Array.from({ length: SECRET_PATTERN_LIMIT + 1 }, (_, i) => ({
+      Array.from({ length: MAX_SECRET_PATTERNS + 1 }, (_, i) => ({
         id: `p${i}`,
-        source: "a",
+        source: okSource,
       })),
       /exceeds the limit/,
     ],

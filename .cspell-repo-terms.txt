@@ -1309,3 +1309,9 @@ undelimited
 verus
 vstd
 prettyplease
+# --- OpenCode secret pattern terms (PR #4280) ---
+ATATT
+amqp
+amqps
+rediss
+xoxe

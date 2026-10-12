@@ -347,7 +347,7 @@ file is not read.
 sources are never reported, and neither is any matched value.
 
 **Limits.** Configured patterns run against every tool output, and AGT does not
-analyse their complexity, so a catastrophically backtracking regex is the
+analyze their complexity, so a catastrophically backtracking regex is the
 operator's to avoid. The checks above reject the simplest runaway sources but
 not the class: `(x+x+)+y` passes them and still takes seconds on 28 characters.
 At most 64 patterns are accepted, each with a source of at most 1000
@@ -355,7 +355,7 @@ characters. This matches the existing `pathPatterns`, `urlPatterns`,
 `commandPatterns` and `poisoningPatterns` keys, which already accept arbitrary
 operator regexes. Redaction also stays deliberately conservative: it catches
 known credential shapes, not every secret, so a high-entropy value with no
-recognisable prefix passes through.
+recognizable prefix passes through.
 
 ### Positive command and URL allowlists
 
